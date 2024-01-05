@@ -1,7 +1,6 @@
 import numpy as np
-import time
 import pyaudio
-from collections import deque
+from utils import SpeechStatus, detect_speech, extract_f0
 
 SR = 16000
 SIZE_FRAME = 512
@@ -9,30 +8,18 @@ SIZE_FRAME = 512
 hamming_window = np.hamming(SIZE_FRAME)
 
 def input_callback(in_data, frame_count, time_info, status_flags):
-  data = np.frombuffer(in_data, dtype=np.int16)
-  data = data / 32768.0
-  rms = np.sqrt(np.mean(data**2))
-  vol = 20 * np.log10(rms)
+  data = np.frombuffer(in_data, dtype=np.int16) / 32768.0
 
-  autocorr = np.correlate(data, data, mode='full')
-  autocorr = autocorr[len(autocorr)//2:]
-  peakindices = [
-    i for i in range(1, len(autocorr)-1) if autocorr[i-1] < autocorr[i] and autocorr[i+1] < autocorr[i]
-  ]
-  if len(peakindices) == 0:
-    f_0 = 0
-  else:
-    max_peak_index = max(peakindices, key=lambda i: autocorr[i])
-    f_0 = SR / max_peak_index
+  f0 = extract_f0(data, SR)
+  speech_status = detect_speech(data, -30, 70)
 
-  zero_cross = int(sum(np.abs(np.diff(np.sign(data))) // 2))
-  if vol > -30:
-    if zero_cross > 70:
-      print(f'unvoiced, zero_cross={zero_cross}')
-    else:
-      print(f'voiced: f_0={f_0:.2f}Hz')
+  if speech_status == SpeechStatus.QUIET:
+    print('quiet')
+  elif speech_status == SpeechStatus.UNVOICED:
+    print(f'unvoiced')
   else:
-    print('not speaking')
+    print(f'voiced: f0={f0:.2f}Hz')
+
   return (in_data, pyaudio.paContinue)
 
 p = pyaudio.PyAudio()
@@ -46,4 +33,8 @@ stream = p.open(
 )
 
 stream.start_stream()
-time.sleep(100)
+while stream.is_active():
+  pass
+stream.stop_stream()
+stream.close()
+p.terminate()

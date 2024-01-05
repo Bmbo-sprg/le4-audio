@@ -2,8 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import librosa
 import pyaudio
-import time
-from collections import deque
+from utils import extract_f0, frame2ceps, frame2vol, wave2cepsgram, wave2specgram, detect_speech, SpeechStatus
 
 SR = 16000
 
@@ -19,24 +18,17 @@ ceps_size = int(input('Enter cepstrum size (default: 13): ') or 13)
 vol_threshold = int(input('Enter volume threshold (dB) (default: -30): ') or -30)
 zero_cross_threshold = int(input('Enter zero-cross threshold (default: 70): ') or 70)
 
-hamming_window = np.hamming(size_frame)
-
 # learning phase
 model = dict()
 is_independent = input('Assume ceps are independent? (Y/n): ') != 'n'
 for vowel in vowel_l:
   modeldata = modeldata_l[vowel]
-  ceps_l = []
-  for i in np.arange(0, len(modeldata) - size_frame, size_shift):
-    idx = int(i)
-    frame = modeldata[idx : idx + size_frame] * hamming_window
-    ceps = np.real(np.fft.rfft(np.log(np.abs(np.fft.rfft(frame)))))
-    ceps_l.append(ceps[:ceps_size])
+  cepsgram = wave2cepsgram(modeldata, size_frame, size_shift, ceps_size=ceps_size)
 
   if is_independent:
-    model[vowel] = (np.mean(ceps_l, axis=0), np.std(ceps_l, axis=0))
+    model[vowel] = (np.mean(cepsgram, axis=0), np.std(cepsgram, axis=0))
   else:
-    model[vowel] = (np.mean(ceps_l), np.cov(ceps_l, rowvar=False))
+    model[vowel] = (np.mean(cepsgram), np.cov(cepsgram, rowvar=False))
 
 # test phase
 def recognize_vowel(model, vowel_l, ceps):
@@ -54,15 +46,12 @@ def recognize_vowel(model, vowel_l, ceps):
   return score_d
 
 def input_callback(in_data, frame_count, time_info, status_flags):
-  data = np.frombuffer(in_data, dtype=np.int16)
-  data = data / 32768.0
-  data_hammed = data * hamming_window
-  vol = 20 * np.log10(np.sqrt(np.mean(data**2)))
-  zero_cross = int(sum(np.abs(np.diff(np.sign(data))) // 2))
+  data = np.frombuffer(in_data, dtype=np.int16) / 32768.0
 
-  ceps = np.real(np.fft.rfft(np.log(np.abs(np.fft.rfft(data_hammed)))))
+  speech_status = detect_speech(data, vol_threshold, zero_cross_threshold)
+  ceps = frame2ceps(data * np.hamming(size_frame))
 
-  if vol < vol_threshold or zero_cross > zero_cross_threshold:
+  if speech_status == SpeechStatus.QUIET or speech_status == SpeechStatus.UNVOICED:
     # not speaking, or unvoiced
     return (in_data, pyaudio.paContinue)
 
@@ -82,35 +71,29 @@ if input('Realtime? (Y/n): ') != 'n':
     stream_callback=input_callback,
   )
   stream.start_stream()
-  time.sleep(100)
+  while stream.is_active():
+    pass
   stream.stop_stream()
-  exit()
+  stream.close()
+  p.terminate()
 else:
   filename = input('Filename of test data (without .wav): ')
   data = librosa.load(f"wave/{filename}.wav", sr=SR)[0]
-  hamming_window = np.hamming(size_frame)
-  spectrogram = []
+
+  specgram = wave2specgram(data, size_frame, size_shift)
   recognized_vowel_l = []
-  f_0 = []
+  f0 = []
   for i in np.arange(0, len(data) - size_frame, size_shift):
     idx = int(i)
-    frame = data[idx : idx + size_frame] * hamming_window
-    frame_hammed = data[idx : idx + size_frame] * hamming_window
-    spec = np.log(np.abs(np.fft.rfft(frame_hammed)))
-    ceps = np.real(np.fft.rfft(spec))
-    vol = 20 * np.log10(np.sqrt(np.mean(frame**2)))
-    zero_cross = int(sum(np.abs(np.diff(np.sign(frame))) // 2))
-    autocorr = np.correlate(frame, frame, mode='full')
-    autocorr = autocorr[len(autocorr)//2:]
-    peakindices = [
-      i for i in range(1, len(autocorr)-1) if autocorr[i-1] < autocorr[i] and autocorr[i+1] < autocorr[i]
-    ]
-    max_peak_index = max(peakindices, key=lambda i: autocorr[i])
-    f_0.append(SR / max_peak_index if vol > vol_threshold else 0)
-    spectrogram.append(spec)
+    frame = data[idx : idx + size_frame]
+    ceps = frame2ceps(frame * np.hamming(size_frame))
+    vol = frame2vol(frame)
+    speech_status = detect_speech(frame, vol_threshold, zero_cross_threshold)
+
+    f0.append(extract_f0(frame * np.hamming(size_frame), SR) if vol > vol_threshold else 0)
+
     score_d = recognize_vowel(model, vowel_l, ceps[:ceps_size])
-    print(vol)
-    if vol < vol_threshold or zero_cross > zero_cross_threshold:
+    if speech_status == SpeechStatus.QUIET or speech_status == SpeechStatus.UNVOICED:
       recognized_vowel_l.append(0)
     else:
       recognized_vowel = max(score_d, key=lambda k: score_d[k])
@@ -122,13 +105,13 @@ else:
   ax1.set_xlabel('Sample')
   ax1.set_ylabel('Frequency [Hz]')
   ax1.imshow(
-    np.flipud(np.array(spectrogram).T),
+    np.flipud(np.array(specgram).T),
     extent=[0, len(data), 0, SR/2],
     aspect='auto',
     interpolation='nearest',
   )
-  x_data = np.linspace(0, len(data), len(f_0))
-  ax1.plot(x_data, f_0, color='blue', label='f0')
+  x_data = np.linspace(0, len(data), len(f0))
+  ax1.plot(x_data, f0, color='blue', label='f0')
   ax1.set_yscale('log')
   ax1.set_ylim([60, SR / 2])
 
