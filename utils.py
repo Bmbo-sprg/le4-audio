@@ -55,6 +55,9 @@ def wave2cepsgram(wave, size_frame, size_shift, ceps_size=None):
     cepsgram.append(ceps if ceps_size == None else ceps[:ceps_size])
   return cepsgram
 
+def frame2spec(frame):
+  return np.fft.rfft(frame * np.hamming(len(frame)))
+
 def frame2ceps(frame, ceps_size=None):
   spec = np.log(np.abs(np.fft.rfft(frame)))
   ceps = np.real(np.fft.rfft(spec))
