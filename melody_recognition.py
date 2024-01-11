@@ -31,10 +31,10 @@ def extract_melody_shs(frame, sr):
         if i == 0:
             continue
         nn = hz2nn(i * sr / 2 / len(spec))
-        extended_chroma[nn] += np.abs(s)
+        extended_chroma[nn] += np.abs(s) ** 2
 
     score_d = dict()
-    for nn in range(56, 86):
+    for nn in range(36, 61):
         score_d[nn] = np.sum(extended_chroma[nn:nn_max:12])
 
     return max(score_d, key=lambda nn: score_d[nn])
@@ -102,7 +102,7 @@ def execute_file(filename):
     ax3 = ax2.twinx()
     ax3.plot(melody_autocorr_l, label='autocorr', color='red')
     ax3.plot(melody_shs_l, label='shs', color='blue')
-    ax3.set_ylim([56, 86])
+    ax3.set_ylim([36, 61])
 
     fig.savefig(f'fig/{filename}_melody.png')
     plt.clf()
