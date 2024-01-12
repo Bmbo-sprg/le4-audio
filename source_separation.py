@@ -12,6 +12,7 @@ size_shift = int(input('Enter shift size (default: 160): ') or 160)
 k = int(input('Enter k (default: 2): ') or 2)
 iter = int(input('Enter iteration (default: 100): ') or 100)
 
+
 def nmf(specgram):
     n, m = specgram.shape
     h = np.random.rand(n, k)
@@ -20,6 +21,7 @@ def nmf(specgram):
         h = h * np.dot(specgram, u.T) / np.dot(u, np.dot(h, u).T).T
         u = u * np.dot(specgram.T, h).T / np.dot(h.T, np.dot(h, u))
     return h, u
+
 
 def execute_file(filename):
     data = librosa.load(f"wave/{filename}.wav", sr=sr)[0]
@@ -60,9 +62,11 @@ def execute_file(filename):
 
     for i in range(k):
         specgram_sep = np.dot(h[:, i:i+1], u[i:i+1, :])
-        data_sep = (np.fft.irfft(specgram_sep).flatten() * 32768.0).astype(np.int16)
+        data_sep = np.fft.irfft(specgram_sep).flatten()
+        data_sep = (data_sep * 32768.0).astype(np.int16)
         print(data_sep)
         scipy.io.wavfile.write(f'wave/{filename}_sep{i}.wav', sr, data_sep)
+
 
 filename = input('Filename of test data (without .wav): ')
 execute_file(filename)

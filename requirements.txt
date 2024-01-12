@@ -3,3 +3,4 @@ matplotlib
 numpy
 pyaudio
 pyqtgraph
+ttkbootstrap
