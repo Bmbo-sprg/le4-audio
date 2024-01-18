@@ -2,5 +2,5 @@ librosa
 matplotlib
 numpy
 pyaudio
-pyqtgraph
+pydub
 ttkbootstrap
