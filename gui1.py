@@ -2,11 +2,16 @@ import librosa
 import matplotlib.pyplot as plt
 import numpy as np
 import os
+import threading
+import time
 import tkinter as tk
 import tkinter.filedialog
 import ttkbootstrap as ttk
 import ttkbootstrap.constants as ttk_const
+import pyaudio
+import wave as pywave
 
+from matplotlib.animation import FuncAnimation
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 from utils import (
@@ -22,7 +27,8 @@ from utils import (
 class AudioVisualizer(ttk.Frame):
     def __init__(self, master=None):
         super().__init__(master)
-        self.filename: str = ""
+        self.filepath: str = ""
+        self.wavefile = None
         self.sr: int = None
         self.wave: np.ndarray = None
         self.specgram: np.ndarray = None
@@ -139,11 +145,9 @@ class AudioVisualizer(ttk.Frame):
         ax = self.fig_specgram.add_subplot(111)
         ax.set_yscale('log')
         ax.set_ylim([60, self.sr / 2])
-        self.img_specgram = ax.imshow(
+        self.img_specgram = ax.pcolormesh(
             self.specgram,
-            extent=[0, len(self.specgram), 0, self.sr / 2],
-            aspect='auto',
-            interpolation='nearest',
+            shading='nearest',
             cmap='inferno',
         )
         self.img_f0 = ax.plot(self.f0, label='f0', color='red')
@@ -155,26 +159,67 @@ class AudioVisualizer(ttk.Frame):
         self.canvas_specgram.draw()
 
     def play(self):
-        if self.is_playing:
+        if self.is_playing or self.wavefile is None:
             return
+        self.p_out = pyaudio.PyAudio()
+        self.stream_out = self.p_out.open(
+            format=self.p_out.get_format_from_width(self.wavefile.getsampwidth()),
+            channels=self.wavefile.getnchannels(),
+            rate=self.wavefile.getframerate(),
+            output=True,
+        )
         self.is_playing = True
         self.play_button.configure(bootstyle=ttk_const.SECONDARY)
         self.pause_button.configure(bootstyle=ttk_const.WARNING)
-        self.increment()
+        self.t_play_out = threading.Thread(target=self.play_out, daemon=True)
+        self.t_play_out.start()
+        self.t_update_gui = threading.Thread(target=self.update_gui, daemon=True)
+        self.t_update_gui.start()
 
-    def increment(self):
-        if not self.is_playing:
-            return
-        self.play_ms += 100
-        self.time_label.configure(text=self._format_time(self.play_ms))
-        self.img_wave[0].set_xdata(np.arange(0, len(self.wave)))
-        self.img_wave[0].set_ydata(self.wave)
-        self.img_specgram.set_data(self.specgram)
-        self.img_f0[0].set_ydata(self.f0)
-        self.img_chordgram[0].set_ydata(self.chordgram)
-        self.canvas_wave.draw_idle()
-        self.canvas_specgram.draw_idle()
-        self.master.after(100, self.increment)
+        def _update_img_wave(frame_idx):
+            print('update wave')
+            # self.img_wave[0].set_xdata(np.arange(0, len(self.wave))),
+            # self.img_wave[0].set_ydata(self.wave)
+            # return self.img_wave[0]
+
+        def _update_img_specgram(frame_idx):
+            print('update specgram')
+            # self.img_specgram.set_data(self.specgram)
+            # self.img_f0[0].set_ydata(self.f0)
+            # self.img_chordgram[0].set_ydata(self.chordgram)
+            # return self.img_specgram, self.img_f0[0], self.img_chordgram[0]
+
+        self.animation_wave = FuncAnimation(
+            self.fig_wave,
+            _update_img_wave,
+            frames=range(10),
+            interval=100,
+            blit=False,
+        )
+        self.animation_specgram = FuncAnimation(
+            self.fig_specgram,
+            _update_img_specgram,
+            frames=range(10),
+            interval=100,
+            blit=False,
+        )
+
+    def play_out(self):
+        CHUNK = 4096
+        data = self.wavefile.readframes(CHUNK)
+        self.play_ms += CHUNK / self.sr * 1000
+        while data != '' and self.is_playing:
+            self.stream_out.write(data)
+            data = self.wavefile.readframes(CHUNK)
+            self.play_ms += CHUNK / self.sr * 1000
+        self.stop()
+
+    def update_gui(self):
+        while True:
+            time.sleep(0.1)
+            if not self.is_playing:
+                continue
+            self.time_label.configure(text=self._format_time(self.play_ms))
 
     def pause(self):
         if not self.is_playing:
@@ -185,6 +230,8 @@ class AudioVisualizer(ttk.Frame):
 
     def stop(self):
         self.is_playing = False
+        self.stream_out.close()
+        self.p_out.terminate()
         self.play_ms = 0
         self.play_button.configure(bootstyle=ttk_const.SUCCESS)
         self.pause_button.configure(bootstyle=ttk_const.SECONDARY)
@@ -193,14 +240,15 @@ class AudioVisualizer(ttk.Frame):
     def open_file(self):
         fTyp = [("wav file", "*.wav")]
         iDir = os.path.abspath(os.path.dirname(__file__))
-        self.filename = tkinter.filedialog.askopenfilename(filetypes=fTyp, initialdir=iDir)
-        if self.filename == '':
+        self.filepath = tkinter.filedialog.askopenfilename(filetypes=fTyp, initialdir=iDir)
+        if self.filepath == '':
             return
 
         self.fig_specgram.clf()
         self.fig_wave.clf()
         self.filename_label.configure(text='Loading...')
 
+        self.wavefile = None
         self.wave = None
         self.specgram = None
         self.f0 = None
@@ -213,7 +261,8 @@ class AudioVisualizer(ttk.Frame):
         fft_shift = int(self.fft_shift_entry.get())
         vol_threshold = int(self.vol_threshold_entry.get())
 
-        self.wave, self.sr = librosa.load(self.filename, sr=None)
+        self.wave, self.sr = librosa.load(self.filepath, sr=None)
+        self.wavefile = pywave.open(self.filepath, 'r')
         specgram = wave2specgram(self.wave, fft_size, fft_shift)
         log_specgram = np.log(np.abs(specgram) + 1e-10)  # avoid log(0)
         self.specgram = np.flipud(np.array(log_specgram).T)
@@ -244,7 +293,7 @@ class AudioVisualizer(ttk.Frame):
         self.f0 = np.asarray(f0)
         self.chordgram = np.asarray(chordgram)
 
-        self.filename_label.configure(text=self.filename)
+        self.filename_label.configure(text=self.filepath)
         self.duration_label.configure(
             text=f'Duration: {self._format_time(len(self.wave) / self.sr * 1000)}')
         self.sr_label.configure(text=f'Sampling rate: {self.sr} Hz')
