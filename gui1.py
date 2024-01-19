@@ -190,13 +190,13 @@ class AudioVisualizer(ttk.Frame):
         self.is_playing = True
         self.play_button.configure(bootstyle=ttk_const.SECONDARY)
         self.pause_button.configure(bootstyle=ttk_const.WARNING)
-        self.t_play_out = threading.Thread(target=self.play_out, daemon=True)
-        self.t_play_out.start()
-        self.t_update_gui = threading.Thread(target=self.update_gui, daemon=True)
-        self.t_update_gui.start()
+        if self.play_ms == 0:
+            self.t_play_out = threading.Thread(target=self.play_out, daemon=True)
+            self.t_play_out.start()
+            self.t_update_gui = threading.Thread(target=self.update_gui, daemon=True)
+            self.t_update_gui.start()
 
     def update_img_wave(self, frame_idx):
-        print(frame_idx, self.is_playing)
         if not self.is_playing:
             return tuple()
         wave = [self.wave[i * len(self.wave) // self.WAVE_RES_X] for i in range(self.WAVE_RES_X)]
@@ -204,7 +204,6 @@ class AudioVisualizer(ttk.Frame):
         return (self.img_wave[0],)
 
     def update_img_specgram(self, frame_idx):
-        print(frame_idx)
         if not self.is_playing:
             return tuple()
         specgram = self.specgram[:, [i * self.specgram.shape[1] // self.SPECGRAM_RES_X for i in range(self.SPECGRAM_RES_X)]]
@@ -217,7 +216,9 @@ class AudioVisualizer(ttk.Frame):
         CHUNK = 1024
         data = self.wavefile.readframes(CHUNK)
         self.play_ms += CHUNK / self.sr * 1000
-        while data != '' and self.is_playing:
+        while data != b'':
+            if not self.is_playing:
+                continue
             self.stream_out.write(data)
             data = self.wavefile.readframes(CHUNK)
             self.play_ms += CHUNK / self.sr * 1000
@@ -238,9 +239,10 @@ class AudioVisualizer(ttk.Frame):
         self.pause_button.configure(bootstyle=ttk_const.SECONDARY)
 
     def stop(self):
-        self.is_playing = False
+        self.pause()
         self.stream_out.close()
         self.p_out.terminate()
+        self.wavefile.rewind()
         self.play_ms = 0
         self.play_button.configure(bootstyle=ttk_const.SUCCESS)
         self.pause_button.configure(bootstyle=ttk_const.SECONDARY)
