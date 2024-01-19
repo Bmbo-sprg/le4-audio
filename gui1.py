@@ -120,18 +120,18 @@ class AudioVisualizer(ttk.Frame):
         self.fig_specgram.subplots_adjust(0.05, 0.05, 0.95, 0.99)
         self.canvas_specgram = FigureCanvasTkAgg(self.fig_specgram, master=self.frame_specgram)
         self.canvas_specgram.get_tk_widget().pack(side=tk.TOP)
-        # self.animation_wave = FuncAnimation(
-        #     self.fig_wave,
-        #     self.update_img_wave,
-        #     interval=500,
-        #     blit=True,
-        # )
-        # self.animation_specgram = FuncAnimation(
-        #     self.fig_specgram,
-        #     self.update_img_specgram,
-        #     interval=100,
-        #     blit=True,
-        # )
+        self.animation_wave = FuncAnimation(
+            self.fig_wave,
+            self.update_img_wave,
+            interval=500,
+            blit=True,
+        )
+        self.animation_specgram = FuncAnimation(
+            self.fig_specgram,
+            self.update_img_specgram,
+            interval=100,
+            blit=True,
+        )
 
         self.ctrl_frame = ttk.Frame(self.mframe)
         self.ctrl_frame.pack(side=tk.TOP)
@@ -209,6 +209,42 @@ class AudioVisualizer(ttk.Frame):
             command=self.apply_vc,
         )
         self.vc_button.pack(side=tk.TOP)
+
+        self.tremolo_freq_frame = ttk.Frame(self.rframe, padding=(0, 10))
+        self.tremolo_freq_frame.pack(side=tk.TOP)
+        self.tremolo_freq_label = ttk.Label(self.tremolo_freq_frame, text='Tremolo frequency')
+        self.tremolo_freq_label.pack(side=tk.LEFT)
+        self.tremolo_freq_scale = ttk.Scale(
+            self.tremolo_freq_frame,
+            from_=0,
+            to=30,
+            value=0,
+            length=200,
+            orient=tk.HORIZONTAL,
+        )
+        self.tremolo_freq_scale.pack(side=tk.LEFT, anchor=tk.W)
+
+        self.tremolo_depth_frame = ttk.Frame(self.rframe, padding=(0, 10))
+        self.tremolo_depth_frame.pack(side=tk.TOP)
+        self.tremolo_depth_label = ttk.Label(self.tremolo_depth_frame, text='Tremolo depth')
+        self.tremolo_depth_label.pack(side=tk.LEFT)
+        self.tremolo_depth_scale = ttk.Scale(
+            self.tremolo_depth_frame,
+            from_=0,
+            to=100,
+            value=0,
+            length=200,
+            orient=tk.HORIZONTAL,
+        )
+        self.tremolo_depth_scale.pack(side=tk.LEFT, anchor=tk.W)
+
+        self.tremolo_button = ttk.Button(
+            self.rframe,
+            text='Apply Tremolo',
+            bootstyle=ttk_const.PRIMARY,
+            command=self.apply_tremolo,
+        )
+        self.tremolo_button.pack(side=tk.TOP)
 
         self.master.protocol("WM_DELETE_WINDOW", self.quit)
 
@@ -332,6 +368,7 @@ class AudioVisualizer(ttk.Frame):
             if self.filepath == '':
                 return
         else:
+            print(filepath)
             self.filepath = filepath
 
         self.fig_specgram.clf()
@@ -402,7 +439,19 @@ class AudioVisualizer(ttk.Frame):
         wave = (wave * 32768.0).astype(np.int16)
         filepath = self.filepath.replace(".wav", "_vc.wav")
         scipy.io.wavfile.write(filepath, self.sr, wave)
-        self.open_file(filepath=self.filepath)
+        self.open_file(filepath=filepath)
+
+    def apply_tremolo(self):
+        if self.is_playing:
+            self.stop()
+        self.tremolo_freq = self.tremolo_freq_scale.get()
+        self.tremolo_depth = self.tremolo_depth_scale.get()
+        wave = self.wave * (1.0 + self.tremolo_depth / 100.0 * np.sin(
+            2.0 * np.pi * self.tremolo_freq * np.arange(len(self.wave)) / self.sr))
+        wave = (wave * 32768.0).astype(np.int16)
+        filepath = self.filepath.replace(".wav", "_tremolo.wav")
+        scipy.io.wavfile.write(filepath, self.sr, wave)
+        self.open_file(filepath=filepath)
 
     def quit(self):
         self.master.quit()
