@@ -9,6 +9,7 @@ import tkinter.filedialog
 import ttkbootstrap as ttk
 import ttkbootstrap.constants as ttk_const
 import pyaudio
+import scipy.io.wavfile
 import wave as pywave
 
 from matplotlib.animation import FuncAnimation
@@ -30,7 +31,15 @@ class AudioVisualizer(ttk.Frame):
         self.filepath: str = ""
         self.wavefile = None
         self.sr: int = None
+        self.fft_size: int = None
+        self.fft_shift: int = None
+        self.vol_threshold: int = None
+        self.vc_freq: float = None
+        self.vc_depth: float = None
+        self.tremolo_freq: float = None
+        self.tremolo_depth: float = None
         self.wave: np.ndarray = None
+        self.spec: np.ndarray = None
         self.specgram: np.ndarray = None
         self.f0: np.ndarray = None
         self.chromagram: np.ndarray = None
@@ -95,33 +104,36 @@ class AudioVisualizer(ttk.Frame):
         )
         self.quit_button.pack(side=tk.TOP)
 
-        self.frame_wave = ttk.Frame(self)
+        self.mframe = ttk.Frame(self, borderwidth=2)
+        self.mframe.pack(side=tk.LEFT)
+
+        self.frame_wave = ttk.Frame(self.mframe)
         self.frame_wave.pack(side=tk.TOP)
-        self.fig_wave = plt.figure(figsize=(12, 3))
+        self.fig_wave = plt.figure(figsize=(10, 3))
         self.fig_wave.subplots_adjust(0.05, 0.01, 0.95, 0.99)
         self.canvas_wave = FigureCanvasTkAgg(self.fig_wave, master=self.frame_wave)
         self.canvas_wave.get_tk_widget().pack(side=tk.TOP)
 
-        self.frame_specgram = ttk.Frame(self)
+        self.frame_specgram = ttk.Frame(self.mframe)
         self.frame_specgram.pack(side=tk.TOP)
-        self.fig_specgram = plt.figure(figsize=(12, 5))
+        self.fig_specgram = plt.figure(figsize=(10, 5))
         self.fig_specgram.subplots_adjust(0.05, 0.05, 0.95, 0.99)
         self.canvas_specgram = FigureCanvasTkAgg(self.fig_specgram, master=self.frame_specgram)
         self.canvas_specgram.get_tk_widget().pack(side=tk.TOP)
-        self.animation_wave = FuncAnimation(
-            self.fig_wave,
-            self.update_img_wave,
-            interval=500,
-            blit=True,
-        )
-        self.animation_specgram = FuncAnimation(
-            self.fig_specgram,
-            self.update_img_specgram,
-            interval=100,
-            blit=True,
-        )
+        # self.animation_wave = FuncAnimation(
+        #     self.fig_wave,
+        #     self.update_img_wave,
+        #     interval=500,
+        #     blit=True,
+        # )
+        # self.animation_specgram = FuncAnimation(
+        #     self.fig_specgram,
+        #     self.update_img_specgram,
+        #     interval=100,
+        #     blit=True,
+        # )
 
-        self.ctrl_frame = ttk.Frame(self)
+        self.ctrl_frame = ttk.Frame(self.mframe)
         self.ctrl_frame.pack(side=tk.TOP)
         self.time_label = ttk.Label(self.ctrl_frame, text=self._format_time(0))
         self.time_label.pack(side=tk.LEFT)
@@ -146,6 +158,59 @@ class AudioVisualizer(ttk.Frame):
             command=self.stop,
         )
         self.stop_button.pack(side=tk.LEFT)
+
+        self.rframe = ttk.Frame(self, borderwidth=2)
+        self.rframe.pack(side=tk.RIGHT)
+
+        self.frame_spec = ttk.Frame(self.rframe)
+        self.frame_spec.pack(side=tk.TOP)
+        self.fig_spec = plt.figure(figsize=(5, 5))
+        self.canvas_spec = FigureCanvasTkAgg(self.fig_spec, master=self.frame_spec)
+        self.canvas_spec.get_tk_widget().pack(side=tk.TOP)
+        self.animation_spec = FuncAnimation(
+            self.fig_spec,
+            self.update_img_spec,
+            interval=100,
+            blit=True,
+        )
+
+        self.vc_freq_frame = ttk.Frame(self.rframe, padding=(0, 10))
+        self.vc_freq_frame.pack(side=tk.TOP)
+        self.vc_freq_label = ttk.Label(self.vc_freq_frame, text='Voice Change frequency')
+        self.vc_freq_label.pack(side=tk.LEFT)
+        self.vc_freq_scale = ttk.Scale(
+            self.vc_freq_frame,
+            from_=0,
+            to=30,
+            value=0,
+            length=200,
+            orient=tk.HORIZONTAL,
+        )
+        self.vc_freq_scale.pack(side=tk.LEFT, anchor=tk.W)
+
+        self.vc_depth_frame = ttk.Frame(self.rframe, padding=(0, 10))
+        self.vc_depth_frame.pack(side=tk.TOP)
+        self.vc_depth_label = ttk.Label(self.vc_depth_frame, text='Voice Change depth')
+        self.vc_depth_label.pack(side=tk.LEFT)
+        self.vc_depth_scale = ttk.Scale(
+            self.vc_depth_frame,
+            from_=0,
+            to=100,
+            value=0,
+            length=200,
+            orient=tk.HORIZONTAL,
+        )
+        self.vc_depth_scale.pack(side=tk.LEFT, anchor=tk.W)
+
+        self.vc_button = ttk.Button(
+            self.rframe,
+            text='Apply Voice Change',
+            bootstyle=ttk_const.PRIMARY,
+            command=self.apply_vc,
+        )
+        self.vc_button.pack(side=tk.TOP)
+
+        self.master.protocol("WM_DELETE_WINDOW", self.quit)
 
     def reload_fig(self):
         self.fig_wave.clf()
@@ -174,8 +239,16 @@ class AudioVisualizer(ttk.Frame):
         chordgram = [self.chordgram[i * len(self.chordgram) // self.SPECGRAM_RES_X] for i in range(self.SPECGRAM_RES_X)]
         self.img_chordgram = ax.plot(chordgram, color='#4582ec')
 
+        self.fig_spec.clf()
+        ax = self.fig_spec.add_subplot(111)
+        ax.set_xlim([0, self.sr // 2])
+        spec = self.spec[0]
+        x_spec = np.linspace(0, self.sr // 2, len(spec))
+        self.img_spec = ax.plot(x_spec, spec, color='#f0ad4e', linewidth=1)
+
         self.canvas_wave.draw()
         self.canvas_specgram.draw()
+        self.canvas_spec.draw()
 
     def play(self):
         if self.is_playing or self.wavefile is None:
@@ -212,6 +285,13 @@ class AudioVisualizer(ttk.Frame):
         self.img_chordgram[0].set_ydata([self.chordgram[i * len(self.chordgram) // self.SPECGRAM_RES_X] for i in range(self.SPECGRAM_RES_X)])
         return self.img_specgram, self.img_f0[0], self.img_chordgram[0]
 
+    def update_img_spec(self, frame_idx):
+        if not self.is_playing:
+            return tuple()
+        spec = self.spec[min(len(self.spec) - 1, int(self.play_ms * self.sr / self.fft_shift / 1000))]
+        self.img_spec[0].set_ydata(spec)
+        return (self.img_spec[0],)
+
     def play_out(self):
         CHUNK = 1024
         data = self.wavefile.readframes(CHUNK)
@@ -227,13 +307,9 @@ class AudioVisualizer(ttk.Frame):
     def update_gui(self):
         while True:
             time.sleep(0.1)
-            if not self.is_playing:
-                continue
             self.time_label.configure(text=self._format_time(self.play_ms))
 
     def pause(self):
-        if not self.is_playing:
-            return
         self.is_playing = False
         self.play_button.configure(bootstyle=ttk_const.SUCCESS)
         self.pause_button.configure(bootstyle=ttk_const.SECONDARY)
@@ -248,46 +324,52 @@ class AudioVisualizer(ttk.Frame):
         self.pause_button.configure(bootstyle=ttk_const.SECONDARY)
         self.time_label.configure(text=self._format_time(self.play_ms))
 
-    def open_file(self):
-        fTyp = [("wav file", "*.wav")]
-        iDir = os.path.abspath(os.path.dirname(__file__))
-        self.filepath = tkinter.filedialog.askopenfilename(filetypes=fTyp, initialdir=iDir)
-        if self.filepath == '':
-            return
+    def open_file(self, filepath=None):
+        if filepath is None:
+            fTyp = [("wav file", "*.wav")]
+            iDir = os.path.abspath(os.path.dirname(__file__))
+            self.filepath = tkinter.filedialog.askopenfilename(filetypes=fTyp, initialdir=iDir)
+            if self.filepath == '':
+                return
+        else:
+            self.filepath = filepath
 
         self.fig_specgram.clf()
         self.fig_wave.clf()
+        self.fig_spec.clf()
         self.filename_label.configure(text='Loading...')
 
         self.wavefile = None
         self.wave = None
         self.specgram = None
+        self.spec = None
         self.f0 = None
         self.chromagram = None
         self.chordgram = None
         self.is_playing = False
         self.play_ms = 0
 
-        fft_size = int(self.fft_size_entry.get())
-        fft_shift = int(self.fft_shift_entry.get())
-        vol_threshold = int(self.vol_threshold_entry.get())
+        self.fft_size = int(self.fft_size_entry.get())
+        self.fft_shift = int(self.fft_shift_entry.get())
+        self.vol_threshold = int(self.vol_threshold_entry.get())
 
         self.wave, self.sr = librosa.load(self.filepath, sr=None)
         self.wavefile = pywave.open(self.filepath, 'r')
-        specgram = wave2specgram(self.wave, fft_size, fft_shift)
+        specgram = wave2specgram(self.wave, self.fft_size, self.fft_shift)
         log_specgram = np.log(np.abs(specgram) + 1e-10)  # avoid log(0)
+        self.spec = log_specgram
         self.specgram = np.flipud(np.array(log_specgram).T)
 
         f0 = []
         chordgram = []
-        for i in np.arange(0, len(self.wave) - fft_size, fft_shift):
+        for i in np.arange(0, len(self.wave) - self.fft_size, self.fft_shift):
             idx = int(i)
-            frame = self.wave[idx:idx + fft_size]
-            frame_hammed = frame * np.hamming(fft_size)
+            frame = self.wave[idx:idx + self.fft_size]
+            frame_hammed = frame * np.hamming(self.fft_size)
             vol = frame2vol(frame)
             f0.append(
                 extract_f0(frame_hammed, self.sr)
-                if vol > vol_threshold else 0
+                if vol > self.vol_threshold else 0
             )
             chroma = spec2chroma(np.abs(frame2spec(frame)), self.sr)
             score_l = []
@@ -299,7 +381,7 @@ class AudioVisualizer(ttk.Frame):
                 )
             chordgram.append(
                 np.argmax(score_l)
-                if vol > vol_threshold else 0
+                if vol > self.vol_threshold else 0
             )
         self.f0 = np.asarray(f0)
         self.chordgram = np.asarray(chordgram)
@@ -309,6 +391,18 @@ class AudioVisualizer(ttk.Frame):
             text=f'Duration: {self._format_time(len(self.wave) / self.sr * 1000)}')
         self.sr_label.configure(text=f'Sampling rate: {self.sr} Hz')
         self.reload_fig()
+
+    def apply_vc(self):
+        if self.is_playing:
+            self.stop()
+        self.vc_freq = self.vc_freq_scale.get()
+        self.vc_depth = self.vc_depth_scale.get()
+        wave = self.wave * (self.vc_depth / 100.0 * np.sin(
+            2.0 * np.pi * self.vc_freq * np.arange(len(self.wave)) / self.sr))
+        wave = (wave * 32768.0).astype(np.int16)
+        filepath = self.filepath.replace(".wav", "_vc.wav")
+        scipy.io.wavfile.write(filepath, self.sr, wave)
+        self.open_file(filepath=self.filepath)
 
     def quit(self):
         self.master.quit()
