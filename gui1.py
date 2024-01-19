@@ -38,6 +38,9 @@ class AudioVisualizer(ttk.Frame):
         self.is_playing: bool = False
         self.play_ms: int = 0
 
+        self.WAVE_RES_X = 10000
+        self.SPECGRAM_RES_X = 100
+
         self.master = master
         self.pack()
 
@@ -94,17 +97,29 @@ class AudioVisualizer(ttk.Frame):
 
         self.frame_wave = ttk.Frame(self)
         self.frame_wave.pack(side=tk.TOP)
-        self.fig_wave = plt.figure(figsize=(16, 3))
+        self.fig_wave = plt.figure(figsize=(12, 3))
         self.fig_wave.subplots_adjust(0.05, 0.01, 0.95, 0.99)
         self.canvas_wave = FigureCanvasTkAgg(self.fig_wave, master=self.frame_wave)
         self.canvas_wave.get_tk_widget().pack(side=tk.TOP)
 
         self.frame_specgram = ttk.Frame(self)
         self.frame_specgram.pack(side=tk.TOP)
-        self.fig_specgram = plt.figure(figsize=(16, 5))
+        self.fig_specgram = plt.figure(figsize=(12, 5))
         self.fig_specgram.subplots_adjust(0.05, 0.05, 0.95, 0.99)
         self.canvas_specgram = FigureCanvasTkAgg(self.fig_specgram, master=self.frame_specgram)
         self.canvas_specgram.get_tk_widget().pack(side=tk.TOP)
+        self.animation_wave = FuncAnimation(
+            self.fig_wave,
+            self.update_img_wave,
+            interval=500,
+            blit=True,
+        )
+        self.animation_specgram = FuncAnimation(
+            self.fig_specgram,
+            self.update_img_specgram,
+            interval=100,
+            blit=True,
+        )
 
         self.ctrl_frame = ttk.Frame(self)
         self.ctrl_frame.pack(side=tk.TOP)
@@ -133,27 +148,31 @@ class AudioVisualizer(ttk.Frame):
         self.stop_button.pack(side=tk.LEFT)
 
     def reload_fig(self):
-        # do some re-scaling stuff
-
         self.fig_wave.clf()
         ax = self.fig_wave.add_subplot(111)
-        ax.set_xlim([0, len(self.wave)])
+        ax.set_xlim([0, self.WAVE_RES_X])
         ax.xaxis.set_visible(False)
-        self.img_wave = ax.plot(self.wave)
+        wave = [self.wave[i * len(self.wave) // self.WAVE_RES_X] for i in range(self.WAVE_RES_X)]
+        self.img_wave = ax.plot(wave, color='#4582ec', linewidth=1)
 
         self.fig_specgram.clf()
         ax = self.fig_specgram.add_subplot(111)
         ax.set_yscale('log')
         ax.set_ylim([60, self.sr / 2])
-        self.img_specgram = ax.pcolormesh(
-            self.specgram,
-            shading='nearest',
+        specgram = self.specgram[:, [i * self.specgram.shape[1] // self.SPECGRAM_RES_X for i in range(self.SPECGRAM_RES_X)]]
+        self.img_specgram = ax.imshow(
+            specgram,
+            extent=[0, specgram.shape[1], 0, self.sr / 2],
+            aspect='auto',
+            interpolation='nearest',
             cmap='inferno',
         )
-        self.img_f0 = ax.plot(self.f0, label='f0', color='red')
+        f0 = [self.f0[i * len(self.f0) // self.SPECGRAM_RES_X] for i in range(self.SPECGRAM_RES_X)]
+        self.img_f0 = ax.plot(f0, color='#d9534f')
         ax = ax.twinx()
         ax.set_ylim([0, 23])
-        self.img_chordgram = ax.plot(self.chordgram, label='chord', color='blue')
+        chordgram = [self.chordgram[i * len(self.chordgram) // self.SPECGRAM_RES_X] for i in range(self.SPECGRAM_RES_X)]
+        self.img_chordgram = ax.plot(chordgram, color='#4582ec')
 
         self.canvas_wave.draw()
         self.canvas_specgram.draw()
@@ -176,36 +195,26 @@ class AudioVisualizer(ttk.Frame):
         self.t_update_gui = threading.Thread(target=self.update_gui, daemon=True)
         self.t_update_gui.start()
 
-        def _update_img_wave(frame_idx):
-            print('update wave')
-            # self.img_wave[0].set_xdata(np.arange(0, len(self.wave))),
-            # self.img_wave[0].set_ydata(self.wave)
-            # return self.img_wave[0]
+    def update_img_wave(self, frame_idx):
+        print(frame_idx, self.is_playing)
+        if not self.is_playing:
+            return tuple()
+        wave = [self.wave[i * len(self.wave) // self.WAVE_RES_X] for i in range(self.WAVE_RES_X)]
+        self.img_wave[0].set_ydata(wave)
+        return (self.img_wave[0],)
 
-        def _update_img_specgram(frame_idx):
-            print('update specgram')
-            # self.img_specgram.set_data(self.specgram)
-            # self.img_f0[0].set_ydata(self.f0)
-            # self.img_chordgram[0].set_ydata(self.chordgram)
-            # return self.img_specgram, self.img_f0[0], self.img_chordgram[0]
-
-        self.animation_wave = FuncAnimation(
-            self.fig_wave,
-            _update_img_wave,
-            frames=range(10),
-            interval=100,
-            blit=False,
-        )
-        self.animation_specgram = FuncAnimation(
-            self.fig_specgram,
-            _update_img_specgram,
-            frames=range(10),
-            interval=100,
-            blit=False,
-        )
+    def update_img_specgram(self, frame_idx):
+        print(frame_idx)
+        if not self.is_playing:
+            return tuple()
+        specgram = self.specgram[:, [i * self.specgram.shape[1] // self.SPECGRAM_RES_X for i in range(self.SPECGRAM_RES_X)]]
+        self.img_specgram.set_data(specgram)
+        self.img_f0[0].set_ydata([self.f0[i * len(self.f0) // self.SPECGRAM_RES_X] for i in range(self.SPECGRAM_RES_X)])
+        self.img_chordgram[0].set_ydata([self.chordgram[i * len(self.chordgram) // self.SPECGRAM_RES_X] for i in range(self.SPECGRAM_RES_X)])
+        return self.img_specgram, self.img_f0[0], self.img_chordgram[0]
 
     def play_out(self):
-        CHUNK = 4096
+        CHUNK = 1024
         data = self.wavefile.readframes(CHUNK)
         self.play_ms += CHUNK / self.sr * 1000
         while data != '' and self.is_playing:
