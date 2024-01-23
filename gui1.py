@@ -17,6 +17,7 @@ from matplotlib.animation import FuncAnimation
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 from utils import (
+    Note,
     CHORDS_L,
     wave2specgram,
     extract_f0,
@@ -51,15 +52,20 @@ class AudioVisualizer(ttk.Frame):
         self.img_wave = None
         self.img_specgram = None
         self.img_spec = None
-        self.f0: np.ndarray = None
-        self.chromagram: np.ndarray = None
+        self.f0_out: np.ndarray = None
+        self.vol_in: float = None
+        self.f0_in: np.ndarray = None
+        self.chroma_in: int = None
         self.chordgram: np.ndarray = None
         self.p_out = pyaudio.PyAudio()
+        self.p_in = pyaudio.PyAudio()
         self.play_status: PlayStatus = PlayStatus.STOP
         self.play_ms: int = 0
+        self.stacked_input = np.array([])
 
         self.WAVE_RES_X = 10000
         self.SPECGRAM_RES_X = 100
+        self.SPEC_RES_X = 1000
         self.P_OUT_CHUNK = 1024
 
         self.master = master
@@ -67,14 +73,6 @@ class AudioVisualizer(ttk.Frame):
 
         self.lframe = ttk.Frame(self, borderwidth=2)
         self.lframe.pack(side=tk.LEFT)
-
-        self.open_file_button = ttk.Button(
-            self.lframe,
-            text='Open file',
-            bootstyle=ttk_const.PRIMARY,
-            command=self.open_file,
-        )
-        self.open_file_button.pack(side=tk.TOP)
 
         self.fft_size_frame = ttk.Frame(self.lframe, padding=(0, 20, 0, 10))
         self.fft_size_frame.pack(side=tk.TOP)
@@ -97,9 +95,23 @@ class AudioVisualizer(ttk.Frame):
         self.vol_threshold_frame.pack(side=tk.TOP)
         self.vol_threshold_label = ttk.Label(self.vol_threshold_frame, text='Volume threshold')
         self.vol_threshold_label.pack(side=tk.LEFT)
-        self.vol_threshold_entry = ttk.Entry(self.vol_threshold_frame)
-        self.vol_threshold_entry.insert(tk.END, '-30')
-        self.vol_threshold_entry.pack(side=tk.LEFT, anchor=tk.W)
+        self.vol_threshold_scale = ttk.Scale(
+            self.vol_threshold_frame,
+            from_=-60,
+            to=0,
+            value=-30,
+            length=200,
+            orient=tk.HORIZONTAL,
+        )
+        self.vol_threshold_scale.pack(side=tk.LEFT, anchor=tk.W)
+
+        self.open_file_button = ttk.Button(
+            self.lframe,
+            text='Open file',
+            bootstyle=ttk_const.PRIMARY,
+            command=self.open_file,
+        )
+        self.open_file_button.pack(side=tk.TOP)
 
         self.filename_label = ttk.Label(self.lframe, text='')
         self.filename_label.pack(side=tk.TOP)
@@ -107,6 +119,78 @@ class AudioVisualizer(ttk.Frame):
         self.duration_label.pack(side=tk.TOP)
         self.sr_label = ttk.Label(self.lframe, text='')
         self.sr_label.pack(side=tk.TOP)
+
+        self.vc_freq_frame = ttk.Frame(self.lframe, padding=(0, 10))
+        self.vc_freq_frame.pack(side=tk.TOP)
+        self.vc_freq_label = ttk.Label(self.vc_freq_frame, text='Voice Change frequency')
+        self.vc_freq_label.pack(side=tk.LEFT)
+        self.vc_freq_scale = ttk.Scale(
+            self.vc_freq_frame,
+            from_=0,
+            to=30,
+            value=0,
+            length=200,
+            orient=tk.HORIZONTAL,
+        )
+        self.vc_freq_scale.pack(side=tk.LEFT, anchor=tk.W)
+
+        self.vc_depth_frame = ttk.Frame(self.lframe, padding=(0, 10))
+        self.vc_depth_frame.pack(side=tk.TOP)
+        self.vc_depth_label = ttk.Label(self.vc_depth_frame, text='Voice Change depth')
+        self.vc_depth_label.pack(side=tk.LEFT)
+        self.vc_depth_scale = ttk.Scale(
+            self.vc_depth_frame,
+            from_=0,
+            to=100,
+            value=0,
+            length=200,
+            orient=tk.HORIZONTAL,
+        )
+        self.vc_depth_scale.pack(side=tk.LEFT, anchor=tk.W)
+
+        self.vc_button = ttk.Button(
+            self.lframe,
+            text='Apply Voice Change',
+            bootstyle=ttk_const.PRIMARY,
+            command=self.apply_vc,
+        )
+        self.vc_button.pack(side=tk.TOP)
+
+        self.tremolo_freq_frame = ttk.Frame(self.lframe, padding=(0, 10))
+        self.tremolo_freq_frame.pack(side=tk.TOP)
+        self.tremolo_freq_label = ttk.Label(self.tremolo_freq_frame, text='Tremolo frequency')
+        self.tremolo_freq_label.pack(side=tk.LEFT)
+        self.tremolo_freq_scale = ttk.Scale(
+            self.tremolo_freq_frame,
+            from_=0,
+            to=30,
+            value=0,
+            length=200,
+            orient=tk.HORIZONTAL,
+        )
+        self.tremolo_freq_scale.pack(side=tk.LEFT, anchor=tk.W)
+
+        self.tremolo_depth_frame = ttk.Frame(self.lframe, padding=(0, 10))
+        self.tremolo_depth_frame.pack(side=tk.TOP)
+        self.tremolo_depth_label = ttk.Label(self.tremolo_depth_frame, text='Tremolo depth')
+        self.tremolo_depth_label.pack(side=tk.LEFT)
+        self.tremolo_depth_scale = ttk.Scale(
+            self.tremolo_depth_frame,
+            from_=0,
+            to=100,
+            value=0,
+            length=200,
+            orient=tk.HORIZONTAL,
+        )
+        self.tremolo_depth_scale.pack(side=tk.LEFT, anchor=tk.W)
+
+        self.tremolo_button = ttk.Button(
+            self.lframe,
+            text='Apply Tremolo',
+            bootstyle=ttk_const.PRIMARY,
+            command=self.apply_tremolo,
+        )
+        self.tremolo_button.pack(side=tk.TOP)
 
         self.quit_button = ttk.Button(
             self.lframe,
@@ -141,7 +225,7 @@ class AudioVisualizer(ttk.Frame):
         self.animation_specgram = FuncAnimation(
             self.fig_specgram,
             self.update_img_specgram,
-            interval=100,
+            interval=250,
             blit=True,
         )
 
@@ -182,93 +266,34 @@ class AudioVisualizer(ttk.Frame):
         self.animation_spec = FuncAnimation(
             self.fig_spec,
             self.update_img_spec,
-            interval=100,
+            interval=250,
             blit=True,
         )
 
-        self.vc_freq_frame = ttk.Frame(self.rframe, padding=(0, 10))
-        self.vc_freq_frame.pack(side=tk.TOP)
-        self.vc_freq_label = ttk.Label(self.vc_freq_frame, text='Voice Change frequency')
-        self.vc_freq_label.pack(side=tk.LEFT)
-        self.vc_freq_scale = ttk.Scale(
-            self.vc_freq_frame,
-            from_=0,
-            to=30,
-            value=0,
-            length=200,
-            orient=tk.HORIZONTAL,
-        )
-        self.vc_freq_scale.pack(side=tk.LEFT, anchor=tk.W)
+        self.chord_labelframe = ttk.LabelFrame(self.rframe, text='Chord')
+        self.chord_labelframe.pack(side=tk.TOP)
+        self.chord_label = ttk.Label(self.chord_labelframe, text='', font=('Helvetica', 20))
+        self.chord_label.pack(side=tk.TOP)
 
-        self.vc_depth_frame = ttk.Frame(self.rframe, padding=(0, 10))
-        self.vc_depth_frame.pack(side=tk.TOP)
-        self.vc_depth_label = ttk.Label(self.vc_depth_frame, text='Voice Change depth')
-        self.vc_depth_label.pack(side=tk.LEFT)
-        self.vc_depth_scale = ttk.Scale(
-            self.vc_depth_frame,
-            from_=0,
-            to=100,
-            value=0,
-            length=200,
-            orient=tk.HORIZONTAL,
-        )
-        self.vc_depth_scale.pack(side=tk.LEFT, anchor=tk.W)
-
-        self.vc_button = ttk.Button(
-            self.rframe,
-            text='Apply Voice Change',
-            bootstyle=ttk_const.PRIMARY,
-            command=self.apply_vc,
-        )
-        self.vc_button.pack(side=tk.TOP)
-
-        self.tremolo_freq_frame = ttk.Frame(self.rframe, padding=(0, 10))
-        self.tremolo_freq_frame.pack(side=tk.TOP)
-        self.tremolo_freq_label = ttk.Label(self.tremolo_freq_frame, text='Tremolo frequency')
-        self.tremolo_freq_label.pack(side=tk.LEFT)
-        self.tremolo_freq_scale = ttk.Scale(
-            self.tremolo_freq_frame,
-            from_=0,
-            to=30,
-            value=0,
-            length=200,
-            orient=tk.HORIZONTAL,
-        )
-        self.tremolo_freq_scale.pack(side=tk.LEFT, anchor=tk.W)
-
-        self.tremolo_depth_frame = ttk.Frame(self.rframe, padding=(0, 10))
-        self.tremolo_depth_frame.pack(side=tk.TOP)
-        self.tremolo_depth_label = ttk.Label(self.tremolo_depth_frame, text='Tremolo depth')
-        self.tremolo_depth_label.pack(side=tk.LEFT)
-        self.tremolo_depth_scale = ttk.Scale(
-            self.tremolo_depth_frame,
-            from_=0,
-            to=100,
-            value=0,
-            length=200,
-            orient=tk.HORIZONTAL,
-        )
-        self.tremolo_depth_scale.pack(side=tk.LEFT, anchor=tk.W)
-
-        self.tremolo_button = ttk.Button(
-            self.rframe,
-            text='Apply Tremolo',
-            bootstyle=ttk_const.PRIMARY,
-            command=self.apply_tremolo,
-        )
-        self.tremolo_button.pack(side=tk.TOP)
+        self.chroma_labelframe = ttk.LabelFrame(self.rframe, text='Chroma')
+        self.chroma_labelframe.pack(side=tk.TOP)
+        self.chroma_label = ttk.Label(self.chroma_labelframe, text='', font=('Helvetica', 20))
+        self.chroma_label.pack(side=tk.TOP)
 
         self.master.protocol("WM_DELETE_WINDOW", self.quit)
 
     def reload_fig(self):
         self.stop()
+        self.fig_wave.clf()
+        self.fig_specgram.clf()
+        self.fig_spec.clf()
+
         ax = self.fig_wave.add_subplot(111)
         ax.set_xlim([0, self.WAVE_RES_X])
         ax.xaxis.set_visible(False)
         wave = [self.wave[i * len(self.wave) // self.WAVE_RES_X] for i in range(self.WAVE_RES_X)]
         self.img_wave = ax.plot(wave, color='#4582ec', linewidth=1)
 
-        self.fig_specgram.clf()
         ax = self.fig_specgram.add_subplot(111)
         ax.set_yscale('log')
         ax.set_ylim([60, self.sr / 2])
@@ -280,21 +305,17 @@ class AudioVisualizer(ttk.Frame):
             interpolation='nearest',
             cmap='inferno',
         )
-        f0 = [self.f0[i * len(self.f0) // self.SPECGRAM_RES_X] for i in range(self.SPECGRAM_RES_X)]
-        self.img_f0 = ax.plot(f0, color='#d9534f')
-        ax = ax.twinx()
-        ax.set_ylim([0, 23])
-        chordgram = [self.chordgram[i * len(self.chordgram) // self.SPECGRAM_RES_X] for i in range(self.SPECGRAM_RES_X)]
-        self.img_chordgram = ax.plot(chordgram, color='#4582ec')
+        f0_out = [self.f0_out[i * len(self.f0_out) // self.SPECGRAM_RES_X] for i in range(self.SPECGRAM_RES_X)]
+        f0_in = [0 for i in range(self.SPECGRAM_RES_X)]
+        self.img_f0 = ax.plot(f0_out, color='#d9534f')
+        self.img_f1 = ax.plot(f0_in, color='#02b875')
 
-        self.fig_spec.clf()
         ax = self.fig_spec.add_subplot(111)
         ax.set_xlim([0, self.sr // 2])
         spec = self.spec[0]
+        spec = [spec[i * len(spec) // self.SPEC_RES_X] for i in range(self.SPEC_RES_X)]
         x_spec = np.linspace(0, self.sr // 2, len(spec))
         self.img_spec = ax.plot(x_spec, spec, color='#f0ad4e', linewidth=1)
-
-        self.fig_wave.clf()
 
         self.canvas_wave.draw()
         self.canvas_specgram.draw()
@@ -316,6 +337,14 @@ class AudioVisualizer(ttk.Frame):
                 channels=self.wavefile.getnchannels(),
                 rate=self.wavefile.getframerate(),
                 output=True,
+            )
+            self.stream_in = self.p_in.open(
+                format=pyaudio.paFloat32,
+                channels=1,
+                rate=self.sr,
+                input=True,
+                frames_per_buffer=self.fft_shift,
+                stream_callback=self.play_in,
             )
             self.play_status = PlayStatus.PLAY
             self.play_button.configure(bootstyle=ttk_const.SECONDARY)
@@ -341,11 +370,29 @@ class AudioVisualizer(ttk.Frame):
 
         self.stop()
 
+    def play_in(self, in_data, frame_count, time_info, status):
+        frame = np.frombuffer(in_data, dtype=np.float32)
+        self.stacked_input = np.hstack((self.stacked_input, frame))
+        if not len(self.stacked_input) >= self.fft_size:
+            return (in_data, pyaudio.paContinue)
+        self.stacked_input = self.stacked_input[-self.fft_size:]
+
+        frame = self.stacked_input
+        frame_hammed = frame * np.hamming(self.fft_size)
+        self.vol_in = frame2vol(frame)
+        self.f0_in[min(len(self.f0_in) - 1, int(self.play_ms * self.sr / self.fft_shift / 1000))] = \
+            extract_f0(frame_hammed, self.sr, 261, 524) if self.vol_in > self.vol_threshold else 0
+        self.chroma_in = np.argmax(spec2chroma(np.abs(frame2spec(frame)), self.sr))
+        return (in_data, pyaudio.paContinue)
+
     def update_gui(self):
         while True:
             if self.play_status == PlayStatus.PLAY:
                 time.sleep(0.1)
+                chord = self.chordgram[min(len(self.chordgram) - 1, int(self.play_ms * self.sr / self.fft_shift / 1000))]
                 self.time_label.configure(text=self._format_time(self.play_ms))
+                self.chord_label.configure(text=CHORDS_L[chord][0] if chord >= 0 else '')
+                self.chroma_label.configure(text=Note(self.chroma_in).name if (self.vol_in or -1000) > self.vol_threshold else '')
             elif self.play_status == PlayStatus.PAUSE:
                 time.sleep(0.1)
             elif self.play_status == PlayStatus.STOP:
@@ -363,11 +410,13 @@ class AudioVisualizer(ttk.Frame):
         if self.play_status == PlayStatus.PAUSE:  # PLAY also ends up here
             self.play_status = PlayStatus.STOP
             self.stream_out.close()
+            self.stream_in.close()
             self.wavefile.rewind()
             self.play_ms = 0
             self.play_button.configure(bootstyle=ttk_const.SUCCESS)
             self.pause_button.configure(bootstyle=ttk_const.SECONDARY)
             self.time_label.configure(text=self._format_time(self.play_ms))
+            self.chord_label.configure(text='')
 
     def update_img_wave(self, frame_idx):
         if self.img_wave is None:
@@ -381,14 +430,15 @@ class AudioVisualizer(ttk.Frame):
             return tuple()
         specgram = self.specgram[:, [i * self.specgram.shape[1] // self.SPECGRAM_RES_X for i in range(self.SPECGRAM_RES_X)]]
         self.img_specgram.set_data(specgram)
-        self.img_f0[0].set_ydata([self.f0[i * len(self.f0) // self.SPECGRAM_RES_X] for i in range(self.SPECGRAM_RES_X)])
-        self.img_chordgram[0].set_ydata([self.chordgram[i * len(self.chordgram) // self.SPECGRAM_RES_X] for i in range(self.SPECGRAM_RES_X)])
-        return self.img_specgram, self.img_f0[0], self.img_chordgram[0]
+        self.img_f0[0].set_ydata([self.f0_out[i * len(self.f0_out) // self.SPECGRAM_RES_X] for i in range(self.SPECGRAM_RES_X)])
+        self.img_f1[0].set_ydata([self.f0_in[i * len(self.f0_in) // self.SPECGRAM_RES_X] for i in range(self.SPECGRAM_RES_X)])
+        return self.img_specgram, self.img_f0[0], self.img_f1[0]
 
     def update_img_spec(self, frame_idx):
         if self.img_spec is None:
             return tuple()
         spec = self.spec[min(len(self.spec) - 1, int(self.play_ms * self.sr / self.fft_shift / 1000))]
+        spec = [spec[i * len(spec) // self.SPEC_RES_X] for i in range(self.SPEC_RES_X)]
         self.img_spec[0].set_ydata(spec)
         return (self.img_spec[0],)
 
@@ -413,14 +463,13 @@ class AudioVisualizer(ttk.Frame):
         self.wave = None
         self.specgram = None
         self.spec = None
-        self.f0 = None
-        self.chromagram = None
+        self.f0_out = None
         self.chordgram = None
         self.play_ms = 0
 
         self.fft_size = int(self.fft_size_entry.get())
         self.fft_shift = int(self.fft_shift_entry.get())
-        self.vol_threshold = int(self.vol_threshold_entry.get())
+        self.vol_threshold = int(self.vol_threshold_scale.get())
 
         self.wave, self.sr = librosa.load(self.filepath, sr=None)
         self.wavefile = pywave.open(self.filepath, 'r')
@@ -437,7 +486,7 @@ class AudioVisualizer(ttk.Frame):
             frame_hammed = frame * np.hamming(self.fft_size)
             vol = frame2vol(frame)
             f0.append(
-                extract_f0(frame_hammed, self.sr)
+                extract_f0(frame_hammed, self.sr, 261, 524)  # C4 ~ C5
                 if vol > self.vol_threshold else 0
             )
             chroma = spec2chroma(np.abs(frame2spec(frame)), self.sr)
@@ -450,9 +499,10 @@ class AudioVisualizer(ttk.Frame):
                 )
             chordgram.append(
                 np.argmax(score_l)
-                if vol > self.vol_threshold else 0
+                if vol > self.vol_threshold else -1
             )
-        self.f0 = np.asarray(f0)
+        self.f0_out = np.asarray(f0)
+        self.f0_in = [0 for _ in range(len(self.f0_out))]
         self.chordgram = np.asarray(chordgram)
 
         self.filename_label.configure(text=self.filepath)

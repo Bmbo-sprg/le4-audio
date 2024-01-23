@@ -117,14 +117,15 @@ def detect_speech(frame, vol_threshold, zero_cross_threshold):
     return SpeechStatus.VOICED
 
 
-def extract_f0(frame, sr):
-    autocorr = np.correlate(frame, frame, mode='full')
-    autocorr = autocorr[len(autocorr)//2:]
+def extract_f0(frame, sr, min_f0=60, max_f0=1000):
+    fft = np.fft.fft(frame)
+    autocorr = np.real(np.fft.ifft(fft * np.conj(fft)))
     peakindices = [
-        i for i in range(1, len(autocorr)-1)
+        i for i in range(sr // max_f0, sr // min_f0)
         if autocorr[i-1] < autocorr[i] and autocorr[i+1] < autocorr[i]
     ]
     if len(peakindices) == 0:
-        return 0
-    max_peak_index = max(peakindices, key=lambda i: autocorr[i])
+        max_peak_index = np.argmax(autocorr[sr // max_f0:sr // min_f0])
+    else:
+        max_peak_index = max(peakindices, key=lambda i: autocorr[i])
     return sr / max_peak_index
