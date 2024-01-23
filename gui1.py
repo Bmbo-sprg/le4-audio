@@ -1,3 +1,4 @@
+from enum import Enum
 import librosa
 import matplotlib.pyplot as plt
 import numpy as np
@@ -25,6 +26,12 @@ from utils import (
 )
 
 
+class PlayStatus(Enum):
+    STOP = 0
+    PLAY = 1
+    PAUSE = 2
+
+
 class AudioVisualizer(ttk.Frame):
     def __init__(self, master=None):
         super().__init__(master)
@@ -41,14 +48,19 @@ class AudioVisualizer(ttk.Frame):
         self.wave: np.ndarray = None
         self.spec: np.ndarray = None
         self.specgram: np.ndarray = None
+        self.img_wave = None
+        self.img_specgram = None
+        self.img_spec = None
         self.f0: np.ndarray = None
         self.chromagram: np.ndarray = None
         self.chordgram: np.ndarray = None
-        self.is_playing: bool = False
+        self.p_out = pyaudio.PyAudio()
+        self.play_status: PlayStatus = PlayStatus.STOP
         self.play_ms: int = 0
 
         self.WAVE_RES_X = 10000
         self.SPECGRAM_RES_X = 100
+        self.P_OUT_CHUNK = 1024
 
         self.master = master
         self.pack()
@@ -249,7 +261,7 @@ class AudioVisualizer(ttk.Frame):
         self.master.protocol("WM_DELETE_WINDOW", self.quit)
 
     def reload_fig(self):
-        self.fig_wave.clf()
+        self.stop()
         ax = self.fig_wave.add_subplot(111)
         ax.set_xlim([0, self.WAVE_RES_X])
         ax.xaxis.set_visible(False)
@@ -282,38 +294,90 @@ class AudioVisualizer(ttk.Frame):
         x_spec = np.linspace(0, self.sr // 2, len(spec))
         self.img_spec = ax.plot(x_spec, spec, color='#f0ad4e', linewidth=1)
 
+        self.fig_wave.clf()
+
         self.canvas_wave.draw()
         self.canvas_specgram.draw()
         self.canvas_spec.draw()
 
     def play(self):
-        if self.is_playing or self.wavefile is None:
+        if self.wavefile is None:
             return
-        self.p_out = pyaudio.PyAudio()
-        self.stream_out = self.p_out.open(
-            format=self.p_out.get_format_from_width(self.wavefile.getsampwidth()),
-            channels=self.wavefile.getnchannels(),
-            rate=self.wavefile.getframerate(),
-            output=True,
-        )
-        self.is_playing = True
-        self.play_button.configure(bootstyle=ttk_const.SECONDARY)
-        self.pause_button.configure(bootstyle=ttk_const.WARNING)
-        if self.play_ms == 0:
+
+        if self.play_status == PlayStatus.PLAY:
+            pass
+        elif self.play_status == PlayStatus.PAUSE:
+            self.play_status = PlayStatus.PLAY
+            self.play_button.configure(bootstyle=ttk_const.SECONDARY)
+            self.pause_button.configure(bootstyle=ttk_const.WARNING)
+        elif self.play_status == PlayStatus.STOP:
+            self.stream_out = self.p_out.open(
+                format=self.p_out.get_format_from_width(self.wavefile.getsampwidth()),
+                channels=self.wavefile.getnchannels(),
+                rate=self.wavefile.getframerate(),
+                output=True,
+            )
+            self.play_status = PlayStatus.PLAY
+            self.play_button.configure(bootstyle=ttk_const.SECONDARY)
+            self.pause_button.configure(bootstyle=ttk_const.WARNING)
             self.t_play_out = threading.Thread(target=self.play_out, daemon=True)
             self.t_play_out.start()
             self.t_update_gui = threading.Thread(target=self.update_gui, daemon=True)
             self.t_update_gui.start()
 
+    def play_out(self):
+        data = self.wavefile.readframes(self.P_OUT_CHUNK)
+        self.play_ms += self.P_OUT_CHUNK / self.sr * 1000
+
+        while data != b'':
+            if self.play_status == PlayStatus.PLAY:
+                self.stream_out.write(data)
+                data = self.wavefile.readframes(self.P_OUT_CHUNK)
+                self.play_ms += self.P_OUT_CHUNK / self.sr * 1000
+            elif self.play_status == PlayStatus.PAUSE:
+                time.sleep(0.1)
+            elif self.play_status == PlayStatus.STOP:
+                return
+
+        self.stop()
+
+    def update_gui(self):
+        while True:
+            if self.play_status == PlayStatus.PLAY:
+                time.sleep(0.1)
+                self.time_label.configure(text=self._format_time(self.play_ms))
+            elif self.play_status == PlayStatus.PAUSE:
+                time.sleep(0.1)
+            elif self.play_status == PlayStatus.STOP:
+                return
+
+    def pause(self):
+        if self.play_status == PlayStatus.PLAY:
+            self.play_status = PlayStatus.PAUSE
+            self.play_button.configure(bootstyle=ttk_const.SUCCESS)
+            self.pause_button.configure(bootstyle=ttk_const.SECONDARY)
+
+    def stop(self):
+        if self.play_status == PlayStatus.PLAY:
+            self.pause()
+        if self.play_status == PlayStatus.PAUSE:  # PLAY also ends up here
+            self.play_status = PlayStatus.STOP
+            self.stream_out.close()
+            self.wavefile.rewind()
+            self.play_ms = 0
+            self.play_button.configure(bootstyle=ttk_const.SUCCESS)
+            self.pause_button.configure(bootstyle=ttk_const.SECONDARY)
+            self.time_label.configure(text=self._format_time(self.play_ms))
+
     def update_img_wave(self, frame_idx):
-        if not self.is_playing:
+        if self.img_wave is None:
             return tuple()
         wave = [self.wave[i * len(self.wave) // self.WAVE_RES_X] for i in range(self.WAVE_RES_X)]
         self.img_wave[0].set_ydata(wave)
         return (self.img_wave[0],)
 
     def update_img_specgram(self, frame_idx):
-        if not self.is_playing:
+        if self.img_specgram is None:
             return tuple()
         specgram = self.specgram[:, [i * self.specgram.shape[1] // self.SPECGRAM_RES_X for i in range(self.SPECGRAM_RES_X)]]
         self.img_specgram.set_data(specgram)
@@ -322,45 +386,14 @@ class AudioVisualizer(ttk.Frame):
         return self.img_specgram, self.img_f0[0], self.img_chordgram[0]
 
     def update_img_spec(self, frame_idx):
-        if not self.is_playing:
+        if self.img_spec is None:
             return tuple()
         spec = self.spec[min(len(self.spec) - 1, int(self.play_ms * self.sr / self.fft_shift / 1000))]
         self.img_spec[0].set_ydata(spec)
         return (self.img_spec[0],)
 
-    def play_out(self):
-        CHUNK = 1024
-        data = self.wavefile.readframes(CHUNK)
-        self.play_ms += CHUNK / self.sr * 1000
-        while data != b'':
-            if not self.is_playing:
-                continue
-            self.stream_out.write(data)
-            data = self.wavefile.readframes(CHUNK)
-            self.play_ms += CHUNK / self.sr * 1000
-        self.stop()
-
-    def update_gui(self):
-        while True:
-            time.sleep(0.1)
-            self.time_label.configure(text=self._format_time(self.play_ms))
-
-    def pause(self):
-        self.is_playing = False
-        self.play_button.configure(bootstyle=ttk_const.SUCCESS)
-        self.pause_button.configure(bootstyle=ttk_const.SECONDARY)
-
-    def stop(self):
-        self.pause()
-        self.stream_out.close()
-        self.p_out.terminate()
-        self.wavefile.rewind()
-        self.play_ms = 0
-        self.play_button.configure(bootstyle=ttk_const.SUCCESS)
-        self.pause_button.configure(bootstyle=ttk_const.SECONDARY)
-        self.time_label.configure(text=self._format_time(self.play_ms))
-
     def open_file(self, filepath=None):
+        self.stop()
         if filepath is None:
             fTyp = [("wav file", "*.wav")]
             iDir = os.path.abspath(os.path.dirname(__file__))
@@ -383,7 +416,6 @@ class AudioVisualizer(ttk.Frame):
         self.f0 = None
         self.chromagram = None
         self.chordgram = None
-        self.is_playing = False
         self.play_ms = 0
 
         self.fft_size = int(self.fft_size_entry.get())
@@ -430,8 +462,7 @@ class AudioVisualizer(ttk.Frame):
         self.reload_fig()
 
     def apply_vc(self):
-        if self.is_playing:
-            self.stop()
+        self.stop()
         self.vc_freq = self.vc_freq_scale.get()
         self.vc_depth = self.vc_depth_scale.get()
         wave = self.wave * (self.vc_depth / 100.0 * np.sin(
@@ -442,8 +473,7 @@ class AudioVisualizer(ttk.Frame):
         self.open_file(filepath=filepath)
 
     def apply_tremolo(self):
-        if self.is_playing:
-            self.stop()
+        self.stop()
         self.tremolo_freq = self.tremolo_freq_scale.get()
         self.tremolo_depth = self.tremolo_depth_scale.get()
         wave = self.wave * (1.0 + self.tremolo_depth / 100.0 * np.sin(
@@ -454,6 +484,7 @@ class AudioVisualizer(ttk.Frame):
         self.open_file(filepath=filepath)
 
     def quit(self):
+        self.stop()
         self.master.quit()
         self.master.destroy()
 
